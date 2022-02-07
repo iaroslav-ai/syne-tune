@@ -31,9 +31,9 @@ def test_likelihood_encoding():
     mean = ScalarMeanFunction()
     kernel = Matern52(dimension=1)
     likelihood = MarginalLikelihood(mean=mean, kernel=kernel)
-    assert isinstance(likelihood.encoding, LogarithmScalarEncoding)
+    assert isinstance(likelihood.encoding_noise, LogarithmScalarEncoding)
     likelihood = MarginalLikelihood(mean=mean, kernel=kernel, encoding_type="positive")
-    assert isinstance(likelihood.encoding, PositiveScalarEncoding)
+    assert isinstance(likelihood.encoding_noise, PositiveScalarEncoding)
 
 
 def test_gp_regression_no_noise():
@@ -147,7 +147,7 @@ def test_gp_regression_2d_with_ard():
     # In particular, for the useless dimensions indexed by {1,2}, the inverse bandwidths should be close to INVERSE_BANDWIDTHS_LOWER_BOUND
     # (or conversely, bandwidths should be close to their highest allowed values)
     sqd = model.likelihood.kernel.squared_distance
-    inverse_bandwidths = sqd.encoding.get(sqd.inverse_bandwidths_internal.data())
+    inverse_bandwidths = sqd.encoding_noise.get(sqd.inverse_bandwidths_internal.data())
 
     assert inverse_bandwidths[0] > inverse_bandwidths[1] and inverse_bandwidths[0] > inverse_bandwidths[2]
     numpy.testing.assert_almost_equal(inverse_bandwidths[1], INVERSE_BANDWIDTHS_LOWER_BOUND)

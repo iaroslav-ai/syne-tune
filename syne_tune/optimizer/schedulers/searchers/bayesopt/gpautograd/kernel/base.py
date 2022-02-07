@@ -113,7 +113,6 @@ class SquaredDistance(Block):
 
         :param X1: input data of size (n1,d)
         :param X2: input data of size (n2,d)
-        :param inverse_bandwidths_internal: self.inverse_bandwidths_internal
         """
         # In case inverse_bandwidths if of size (1, dimension), dimension>1,
         # ARD is handled by broadcasting
@@ -160,7 +159,7 @@ class SquaredDistance(Block):
                 assert k in param_dict, "'{}' not in param_dict = {}".format(k, param_dict)
             inverse_bandwidths = [param_dict[k] for k in keys]
         self.encoding.set(self.inverse_bandwidths_internal, inverse_bandwidths)
-        
+
 
 class Matern52(KernelFunction):
     """
@@ -178,15 +177,15 @@ class Matern52(KernelFunction):
     def __init__(self, dimension, ARD=False, encoding_type=DEFAULT_ENCODING,
                  has_covariance_scale=True, **kwargs):
         super(Matern52, self).__init__(dimension, **kwargs)
-        self.encoding = create_encoding(
-            encoding_type, INITIAL_COVARIANCE_SCALE,
-            COVARIANCE_SCALE_LOWER_BOUND, COVARIANCE_SCALE_UPPER_BOUND, 1,
-            LogNormal(0.0, 1.0))
         self.ARD = ARD
         self.has_covariance_scale = has_covariance_scale
         self.squared_distance = SquaredDistance(
             dimension=dimension, ARD=ARD, encoding_type=encoding_type)
         if has_covariance_scale:
+            self.encoding = create_encoding(
+                encoding_type, INITIAL_COVARIANCE_SCALE,
+                COVARIANCE_SCALE_LOWER_BOUND, COVARIANCE_SCALE_UPPER_BOUND, 1,
+                LogNormal(0.0, 1.0))
             with self.name_scope():
                 self.covariance_scale_internal = register_parameter(
                     self.params, 'covariance_scale', self.encoding)
@@ -201,8 +200,6 @@ class Matern52(KernelFunction):
     def forward(self, X1, X2):
         """
         Actual computation of the Matern52 kernel matrix (see details above)
-        See http://www.gaussianprocess.org/gpml/chapters/RW.pdf,
-        equation (4.17)
 
         :param X1: input data of size (n1, d)
         :param X2: input data of size (n2, d)

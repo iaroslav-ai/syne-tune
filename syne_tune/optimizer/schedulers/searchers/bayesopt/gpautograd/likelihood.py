@@ -14,9 +14,10 @@ import autograd.numpy as anp
 
 from syne_tune.optimizer.schedulers.searchers.bayesopt.gpautograd.constants \
     import INITIAL_NOISE_VARIANCE, NOISE_VARIANCE_LOWER_BOUND, \
-    NOISE_VARIANCE_UPPER_BOUND, DEFAULT_ENCODING
+    NOISE_VARIANCE_UPPER_BOUND, DEFAULT_ENCODING, INITIAL_COVARIANCE_SCALE, \
+    COVARIANCE_SCALE_LOWER_BOUND, COVARIANCE_SCALE_UPPER_BOUND
 from syne_tune.optimizer.schedulers.searchers.bayesopt.gpautograd.distribution \
-    import Gamma
+    import Gamma, LogNormal
 from syne_tune.optimizer.schedulers.searchers.bayesopt.gpautograd.gluon \
     import Block
 from syne_tune.optimizer.schedulers.searchers.bayesopt.gpautograd.gluon_blocks_helpers \
@@ -40,10 +41,15 @@ class MarginalLikelihood(Block):
         a scalar fitted while optimizing the likelihood)
     :param initial_noise_variance: A scalar to initialize the value of the
         residual noise variance
+    :param has_covariance_scale: If True, we maintain a `covariance_scale`
+        parameter here, which is multiplied with the kernel. This is useful
+        if several likelihoods share the same kernel, but have their own
+        covariance scales
     """
     def __init__(
             self, kernel: KernelFunction, mean: MeanFunction = None,
-            initial_noise_variance=None, encoding_type=None, **kwargs):
+            initial_noise_variance=None, encoding_type=None,
+            has_covariance_scale=False, **kwargs):
         super(MarginalLikelihood, self).__init__(**kwargs)
         if mean is None:
             mean = ScalarMeanFunction()
@@ -51,22 +57,45 @@ class MarginalLikelihood(Block):
             initial_noise_variance = INITIAL_NOISE_VARIANCE
         if encoding_type is None:
             encoding_type = DEFAULT_ENCODING
-        self.encoding = create_encoding(
+        self.encoding_noise = create_encoding(
              encoding_type, initial_noise_variance, NOISE_VARIANCE_LOWER_BOUND,
              NOISE_VARIANCE_UPPER_BOUND, 1, Gamma(mean=0.1, alpha=0.1))
         self.mean = mean
         self.kernel = kernel
+        if has_covariance_scale:
+            self.encoding_covscale = create_encoding(
+                encoding_type, INITIAL_COVARIANCE_SCALE,
+                COVARIANCE_SCALE_LOWER_BOUND, COVARIANCE_SCALE_UPPER_BOUND, 1,
+                LogNormal(0.0, 1.0))
         with self.name_scope():
             self.noise_variance_internal = register_parameter(
-                self.params, 'noise_variance', self.encoding)
+                self.params, 'noise_variance', self.encoding_noise)
+            if has_covariance_scale:
+                self.covariance_scale_internal = register_parameter(
+                    self.params, 'covariance_scale', self.encoding_covscale)
 
     def _noise_variance(self):
         return encode_unwrap_parameter(
-            self.noise_variance_internal, self.encoding)
+            self.noise_variance_internal, self.encoding_noise)
+
+    def _covariance_scale(self):
+        if self.encoding_covscale is not None:
+            return encode_unwrap_parameter(
+                self.covariance_scale_internal, self.encoding_covscale)
+        else:
+            return 1.0
 
     def get_posterior_state(self, features, targets):
+        if self.encoding_covscale is not None:
+            kernel = (self.kernel, self._covariance_scale())
+        else:
+            kernel = self.kernel
         return GaussProcPosteriorState(
-            features, targets, self.mean, self.kernel, self._noise_variance())
+            features=features,
+            targets=targets,
+            mean=self.mean,
+            kernel=kernel,
+            noise_variance=self._noise_variance())
 
     def forward(self, features, targets):
         """
@@ -83,7 +112,10 @@ class MarginalLikelihood(Block):
         Return a list of tuples with the Gluon parameters of the likelihood and their respective encodings
         """
         own_param_encoding_pairs = [
-            (self.noise_variance_internal, self.encoding)]
+            (self.noise_variance_internal, self.encoding_noise)]
+        if self.encoding_covscale is not None:
+            own_param_encoding_pairs.append(
+                (self.covariance_scale_internal, self.encoding_covscale))
         return own_param_encoding_pairs + self.mean.param_encoding_pairs() + \
                self.kernel.param_encoding_pairs()
 
@@ -103,10 +135,24 @@ class MarginalLikelihood(Block):
         return noise_variance if as_ndarray else anp.reshape(noise_variance, (1,))[0]
 
     def set_noise_variance(self, val):
-        self.encoding.set(self.noise_variance_internal, val)
+        self.encoding_noise.set(self.noise_variance_internal, val)
         
+    def get_covariance_scale(self):
+        if self.encoding_covscale is not None:
+            return self._covariance_scale()[0]
+        else:
+            return 1.0
+
+    def set_covariance_scale(self, covariance_scale):
+        assert self.encoding_covscale is not None, \
+            "covariance_scale is fixed to 1"
+        self.encoding_covscale.set(
+            self.covariance_scale_internal, covariance_scale)
+
     def get_params(self):
         result = {'noise_variance': self.get_noise_variance()}
+        if self.encoding_covscale is not None:
+            result['covariance_scale'] = self.get_covariance_scale()
         for pref, func in [('kernel_', self.kernel), ('mean_', self.mean)]:
             result.update({
                 (pref + k): v for k, v in func.get_params().items()})
@@ -120,3 +166,5 @@ class MarginalLikelihood(Block):
                 if k.startswith(pref)}
             func.set_params(stripped_dict)
         self.set_noise_variance(param_dict['noise_variance'])
+        if self.encoding_covscale is not None:
+            self.set_covariance_scale(param_dict['covariance_scale'])

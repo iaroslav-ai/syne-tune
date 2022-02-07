@@ -10,8 +10,10 @@
 # on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
 # express or implied. See the License for the specific language governing
 # permissions and limitations under the License.
+from typing import Tuple, Union
 import autograd.numpy as anp
 import autograd.scipy.linalg as aspl
+import numpy as np
 from autograd.builtins import isinstance
 from autograd.tracer import getval
 from numpy.random import RandomState
@@ -21,11 +23,30 @@ from syne_tune.optimizer.schedulers.searchers.bayesopt.gpautograd.constants\
     MIN_CHOLESKY_DIAGONAL_VALUE
 from syne_tune.optimizer.schedulers.searchers.bayesopt.gpautograd.custom_op \
     import AddJitterOp, cholesky_factorization, flatten_and_concat
+from syne_tune.optimizer.schedulers.searchers.bayesopt.gpautograd.mean \
+    import MeanFunction
+from syne_tune.optimizer.schedulers.searchers.bayesopt.gpautograd.kernel \
+    import KernelFunction
+
+
+KernelFunctionWithCovarianceScale = Union[
+    KernelFunction, Tuple[KernelFunction, np.ndarray]]
+
+
+def _extract_kernel_and_scale(kernel: KernelFunctionWithCovarianceScale):
+    if isinstance(kernel, tuple):
+        return kernel[0], anp.reshape(kernel[1], (1, 1))
+    else:
+        return kernel, 1.0
 
 
 def cholesky_computations(
-        features, targets, mean, kernel, noise_variance, debug_log=False,
-        test_intermediates=None):
+        features,
+        targets,
+        mean: MeanFunction,
+        kernel: KernelFunctionWithCovarianceScale,
+        noise_variance,
+        debug_log: bool = False):
     """
     Given input matrix X (features), target matrix Y (targets), mean and kernel
     function, compute posterior state {L, P}, where L is the Cholesky factor
@@ -39,14 +60,13 @@ def cholesky_computations(
     :param features: Input matrix X (n, d)
     :param targets: Target matrix Y (n, m)
     :param mean: Mean function
-    :param kernel: Kernel function
+    :param kernel: Kernel function, or tuple
     :param noise_variance: Noise variance (may be increased)
     :param debug_log: Debug output during add_jitter CustomOp?
-    :param test_intermediates: If given, all intermediates are written into
-        this dict
     :return: L, P
     """
-    kernel_mat = kernel(features, features)
+    _kernel, covariance_scale = _extract_kernel_and_scale(kernel)
+    kernel_mat = _kernel(features, features) * covariance_scale
     # Add jitter to noise_variance (if needed) in order to guarantee that
     # Cholesky factorization works
     sys_mat = AddJitterOp(
@@ -56,28 +76,16 @@ def cholesky_computations(
     chol_fact = cholesky_factorization(sys_mat)
     centered_y = targets - anp.reshape(mean(features), (-1, 1))
     pred_mat = aspl.solve_triangular(chol_fact, centered_y, lower=True)
-    # print('chol_fact', chol_fact)
-
-    if test_intermediates is not None:
-        assert isinstance(test_intermediates, dict)
-        test_intermediates.update({
-            'features': features,
-            'targets': targets,
-            'noise_variance': noise_variance,
-            'kernel_mat': kernel_mat,
-            'sys_mat': sys_mat,
-            'chol_fact': chol_fact,
-            'pred_mat': pred_mat,
-            'centered_y': centered_y})
-        test_intermediates.update(kernel.get_params())
-        test_intermediates.update(mean.get_params())   
-    
     return chol_fact, pred_mat
 
 
 def predict_posterior_marginals(
-        features, mean, kernel, chol_fact, pred_mat, test_features,
-        test_intermediates=None):
+        features,
+        mean: MeanFunction,
+        kernel: KernelFunctionWithCovarianceScale,
+        chol_fact,
+        pred_mat,
+        test_features):
     """
     Computes posterior means and variances for test_features.
     If pred_mat is a matrix, so will be posterior_means, but not
@@ -87,36 +95,32 @@ def predict_posterior_marginals(
 
     :param features: Training inputs
     :param mean: Mean function
-    :param kernel: Kernel function
+    :param kernel: Kernel function, or tuple
     :param chol_fact: Part L of posterior state
     :param pred_mat: Part P of posterior state
     :param test_features: Test inputs
     :return: posterior_means, posterior_variances
     """
-    k_tr_te = kernel(features, test_features)
+    _kernel, covariance_scale = _extract_kernel_and_scale(kernel)
+    k_tr_te = _kernel(features, test_features) * covariance_scale
     linv_k_tr_te = aspl.solve_triangular(chol_fact, k_tr_te, lower=True)
-    posterior_means = anp.matmul(anp.transpose(linv_k_tr_te), pred_mat) + \
+    posterior_means = anp.matmul(anp.transpose(linv_k_tr_te), pred_mat) +\
                       anp.reshape(mean(test_features), (-1, 1))
-    posterior_variances = kernel.diagonal(test_features) - anp.sum(
-        anp.square(linv_k_tr_te), axis=0)
-    if test_intermediates is not None:
-        assert isinstance(test_intermediates, dict)
-        test_intermediates.update({
-            'k_tr_te': k_tr_te,
-            'linv_k_tr_te': linv_k_tr_te,
-            'test_features': test_features,
-            'pred_means': posterior_means,
-            'pred_vars': anp.reshape(anp.maximum(
-                posterior_variances, MIN_POSTERIOR_VARIANCE),
-                (-1,))})    
-
+    posterior_variances = _kernel.diagonal(test_features) * covariance_scale -\
+                          anp.sum(anp.square(linv_k_tr_te), axis=0)
     return posterior_means, anp.reshape(anp.maximum(
         posterior_variances, MIN_POSTERIOR_VARIANCE), (-1,))
 
 
 def sample_posterior_marginals(
-        features, mean, kernel, chol_fact, pred_mat, test_features,
-        random_state: RandomState, num_samples: int = 1):
+        features,
+        mean: MeanFunction,
+        kernel: KernelFunctionWithCovarianceScale,
+        chol_fact,
+        pred_mat,
+        test_features,
+        random_state: RandomState,
+        num_samples: int = 1):
     """
     Draws num_sample samples from the product of marginals of the posterior
     over input points test_features. If pred_mat is a matrix with m columns,
@@ -124,7 +128,7 @@ def sample_posterior_marginals(
 
     :param features: Training inputs
     :param mean: Mean function
-    :param kernel: Kernel function
+    :param kernel: Kernel function, or tuple
     :param chol_fact: Part L of posterior state
     :param pred_mat: Part P of posterior state
     :param test_features: Test inputs
@@ -148,8 +152,14 @@ def sample_posterior_marginals(
 
 
 def sample_posterior_joint(
-        features, mean, kernel, chol_fact, pred_mat, test_features,
-        random_state: RandomState, num_samples: int = 1):
+        features,
+        mean: MeanFunction,
+        kernel: KernelFunctionWithCovarianceScale,
+        chol_fact,
+        pred_mat,
+        test_features,
+        random_state: RandomState,
+        num_samples: int = 1):
     """
     Draws num_sample samples from joint posterior distribution over inputs
     test_features. This is done by computing mean and covariance matrix of
@@ -159,19 +169,20 @@ def sample_posterior_joint(
 
     :param features: Training inputs
     :param mean: Mean function
-    :param kernel: Kernel function
+    :param kernel: Kernel function, or tuple
     :param chol_fact: Part L of posterior state
     :param pred_mat: Part P of posterior state
     :param test_features: Test inputs
     :param num_samples: Number of samples to draw
     :return: Samples, shape (n_test, num_samples) or (n_test, m, num_samples)
     """
-    k_tr_te = kernel(features, test_features)
+    _kernel, covariance_scale = _extract_kernel_and_scale(kernel)
+    k_tr_te = _kernel(features, test_features) * covariance_scale
     linv_k_tr_te = aspl.solve_triangular(chol_fact, k_tr_te, lower=True)
-    posterior_mean = anp.matmul(anp.transpose(linv_k_tr_te), pred_mat) + \
+    posterior_mean = anp.matmul(anp.transpose(linv_k_tr_te), pred_mat) +\
                      anp.reshape(mean(test_features), (-1, 1))
-    posterior_cov = kernel(test_features, test_features) - anp.dot(
-        anp.transpose(linv_k_tr_te), linv_k_tr_te)
+    posterior_cov = _kernel(test_features, test_features) * covariance_scale -\
+                    anp.dot(anp.transpose(linv_k_tr_te), linv_k_tr_te)
     jitter_init = anp.ones((1,)) * (1e-5)
     sys_mat = AddJitterOp(
         flatten_and_concat(posterior_cov, jitter_init),
@@ -195,15 +206,22 @@ def sample_posterior_joint(
     return samples
 
 
-def _compute_lvec(features, chol_fact, kernel, feature):
-    kvec = anp.reshape(kernel(features, feature), (-1, 1))
+def _compute_lvec(features, chol_fact, kernel, covariance_scale, feature):
+    kvec = anp.reshape(kernel(features, feature), (-1, 1)) * covariance_scale
     return anp.reshape(aspl.solve_triangular(
         chol_fact, kvec, lower=True), (1, -1))
 
 
 def cholesky_update(
-        features, chol_fact, pred_mat, mean, kernel, noise_variance,
-        feature, target, lvec=None):
+        features,
+        mean: MeanFunction,
+        kernel: KernelFunctionWithCovarianceScale,
+        chol_fact,
+        pred_mat,
+        noise_variance,
+        feature,
+        target,
+        lvec=None):
     """
     Incremental update of posterior state (Cholesky factor, prediction
     matrix), given one datapoint (feature, target).
@@ -227,9 +245,11 @@ def cholesky_update(
         except the diagonal entry. If not, this is computed here
     :return: chol_fact_new (n+1, n+1), pred_mat_new (n+1, m)
     """
+    _kernel, covariance_scale = _extract_kernel_and_scale(kernel)
     if lvec is None:
-        lvec = _compute_lvec(features, chol_fact, kernel, feature)
-    kscal = anp.reshape(kernel.diagonal(feature), (1,))
+        lvec = _compute_lvec(
+            features, chol_fact, _kernel, covariance_scale, feature)
+    kscal = anp.reshape(_kernel.diagonal(feature) * covariance_scale, (1,))
     noise_variance = anp.reshape(noise_variance, (1,))
     lsqscal = anp.maximum(
         kscal + noise_variance - anp.sum(anp.square(lvec)),
@@ -246,6 +266,7 @@ def cholesky_update(
 
     return chol_fact_new, pred_mat_new
 
+
 # Specialized routine, used in IncrementalUpdateGPPosteriorState.
 # The idea is to share the computation of lvec between sampling a new target
 # value and incremental Cholesky update.
@@ -253,14 +274,23 @@ def cholesky_update(
 # columns of pred_mat). Columns j of target, where mean_impute_ mask[j] is
 # true, are set to the predictive mean (instead of being sampled).
 def sample_and_cholesky_update(
-        features, chol_fact, pred_mat, mean, kernel, noise_variance,
-        feature, random_state: RandomState, mean_impute_mask=None):
+        features,
+        mean: MeanFunction,
+        kernel: KernelFunctionWithCovarianceScale,
+        chol_fact,
+        pred_mat,
+        noise_variance,
+        feature,
+        random_state: RandomState,
+        mean_impute_mask=None):
+    _kernel, covariance_scale = _extract_kernel_and_scale(kernel)
     # Draw sample target. Also, lvec is reused below
-    lvec = _compute_lvec(features, chol_fact, kernel, feature)
+    lvec = _compute_lvec(
+        features, chol_fact, _kernel, covariance_scale, feature)
     pred_mean = anp.dot(lvec, pred_mat) + anp.reshape(mean(feature), (1, 1))
     # Note: We do not add noise_variance to the predictive variance
     pred_std = anp.reshape(anp.sqrt(anp.maximum(
-        kernel.diagonal(feature) - anp.sum(anp.square(lvec)),
+        _kernel.diagonal(feature) * covariance_scale - anp.sum(anp.square(lvec)),
         MIN_POSTERIOR_VARIANCE)), (1, 1))
     n01mat = random_state.normal(size=getval(pred_mean.shape))
     if mean_impute_mask is not None:

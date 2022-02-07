@@ -71,10 +71,10 @@ def test_warping_with_multidimension_and_arbitrary_parameters():
     
     # We change the warping parameters of the first dimension only
     w0 = warping.transformations[0]
-    w0.encoding.set(w0.warping_internal, [2., 0.5])
+    w0.encoding_noise.set(w0.warping_internal, [2., 0.5])
     
     w2 = warping.transformations[2]
-    w2_parameters = w2.encoding.get(w2.warping_internal.data())
+    w2_parameters = w2.encoding_noise.get(w2.warping_internal.data())
     
     # The parameters of w2 should be the default ones (as there was no set operations)
     numpy.testing.assert_almost_equal(w2_parameters, anp.ones(2))

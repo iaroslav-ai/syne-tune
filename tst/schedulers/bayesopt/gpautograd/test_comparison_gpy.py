@@ -87,16 +87,14 @@ def download(url, path=None, overwrite=False):
 # is because it is too annoying to make GPy use such a mean function
 def fit_predict_ours(
         data: dict, random_seed: int,
-        optimization_config: OptimizationConfig,
-        test_intermediates: Optional[dict] = None) -> dict:
+        optimization_config: OptimizationConfig) -> dict:
     # Create surrogate model
     num_dims = len(data['ss_limits'])
     _gpmodel = GaussianProcessRegression(
         kernel=Matern52(num_dims, ARD=True),
         mean=ZeroMeanFunction(),  # Instead of ScalarMeanFunction
         optimization_config=optimization_config,
-        random_seed=random_seed,
-        test_intermediates=test_intermediates)
+        random_seed=random_seed)
     model_factory = GaussProcEmpiricalBayesModelFactory(
         active_metric=INTERNAL_METRIC_NAME, gpmodel=_gpmodel, num_fantasy_samples=20)
     model = model_factory.model(data['state'], fit_params=True)
@@ -259,15 +257,8 @@ def test_comparison_gpy():
         #    pickle.dump(branin_gpy, handle, protocol=pickle.HIGHEST_PROTOCOL)
         # --------------------------------------------------------------------
 
-        # test_intermediates = dict()  # DEBUG
-        test_intermediates = None
         branin_ours = fit_predict_ours(
-            branin, random_seed, optimization_config,
-            test_intermediates=test_intermediates)
-        # DEBUG:
-        # compare_gpy_predict_posterior_marginals(
-        #     test_intermediates, noise_variance_gpy=None)
-        # END DEBUG
+            branin, random_seed, optimization_config)
 
         # If you want a visual result, uncomment the following lines
         # title = "Branin, num_train={}".format(num_train)
@@ -314,15 +305,8 @@ def test_comparison_gpy():
         #    pickle.dump(threehump_gpy, handle, protocol=pickle.HIGHEST_PROTOCOL)
         # --------------------------------------------------------------------
 
-        # test_intermediates = dict()  # DEBUG
-        test_intermediates = None
         threehump_ours = fit_predict_ours(
-            threehump, random_seed, optimization_config,
-            test_intermediates=test_intermediates)
-        # DEBUG:
-        # compare_gpy_predict_posterior_marginals(
-        #     test_intermediates, noise_variance_gpy=None)
-        # END DEBUG
+            threehump, random_seed, optimization_config)
 
         # If you want a visual result, uncomment the following lines
         # title = "ThreeHump, num_train={}".format(num_train)
@@ -365,15 +349,8 @@ def test_comparison_gpy():
         #    pickle.dump(ackley_gpy, handle, protocol=pickle.HIGHEST_PROTOCOL)
         # --------------------------------------------------------------------
 
-        # test_intermediates = dict()  # DEBUG
-        test_intermediates = None
         ackley_ours = fit_predict_ours(
-            ackley, random_seed, optimization_config,
-            test_intermediates=test_intermediates)
-        # DEBUG:
-        # compare_gpy_predict_posterior_marginals(
-        #     test_intermediates, noise_variance_gpy=None)
-        # END DEBUG
+            ackley, random_seed, optimization_config)
 
         # If you want a visual result, uncomment the following lines
         # title = "Ackley, num_train={}".format(num_train)

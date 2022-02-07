@@ -24,7 +24,8 @@ from syne_tune.optimizer.schedulers.searchers.bayesopt.gpautograd.mean \
 from syne_tune.optimizer.schedulers.searchers.bayesopt.gpautograd.posterior_utils \
     import cholesky_computations, predict_posterior_marginals, \
     sample_posterior_marginals, sample_posterior_joint, cholesky_update, \
-    negative_log_marginal_likelihood, sample_and_cholesky_update
+    negative_log_marginal_likelihood, sample_and_cholesky_update, \
+    KernelFunctionWithCovarianceScale
 
 
 class GaussProcPosteriorState(object):
@@ -34,10 +35,12 @@ class GaussProcPosteriorState(object):
     updated, a new object is created and returned.
     """
     def __init__(
-            self, features: np.ndarray, targets: Optional[np.ndarray],
-            mean: MeanFunction, kernel: KernelFunction,
-            noise_variance: np.ndarray, debug_log: bool = False,
-            test_intermediates: Optional[dict] = None,
+            self, features: np.ndarray,
+            targets: Optional[np.ndarray],
+            mean: MeanFunction,
+            kernel: KernelFunctionWithCovarianceScale,
+            noise_variance: np.ndarray,
+            debug_log: bool = False,
             **kwargs):
         """
         If targets has m > 1 columns, they correspond to fantasy samples.
@@ -45,33 +48,48 @@ class GaussProcPosteriorState(object):
         If targets is None, this is an internal (copy) constructor, where
         kwargs contains chol_fact, pred_mat.
 
+        `kernel` can be a tuple `(_kernel, covariance_scale)`, where
+        `_kernel` is a `KernelFunction`, `covariance_scale` a scalar
+        parameter. In this case, the kernel function is their product.
+
         :param features: Input points X, shape (n, d)
         :param targets: Targets Y, shape (n, m)
         :param mean: Mean function m(X)
-        :param kernel: Kernel function k(X, X')
+        :param kernel: Kernel function k(X, X'), or tuple (see above)
         :param noise_variance: Noise variance sigsq, shape (1,)
-        :param test_intermediates: See cholesky_computations
+        :param covariance_scale: See above
         """
         self.mean = mean
-        self.kernel = kernel
+        self.kernel = self._check_and_assign_kernel(kernel)
         self.noise_variance = anp.array(noise_variance, copy=True)
         if targets is not None:
             targets_shape = getval(targets.shape)
             targets = anp.reshape(targets, (targets_shape[0], -1))
 
             chol_fact, pred_mat = cholesky_computations(
-                features, targets, mean, kernel, noise_variance,
-                debug_log=debug_log, test_intermediates=test_intermediates)
-            
+                features, targets, mean, self.kernel, noise_variance,
+                debug_log=debug_log)
+
             self.features = anp.array(features, copy=True)
             self.chol_fact = chol_fact
             self.pred_mat = pred_mat
-            self._test_intermediates = test_intermediates
         else:
             # Internal (copy) constructor
             self.features = features
             self.chol_fact = kwargs['chol_fact']
             self.pred_mat = kwargs['pred_mat']
+
+    @staticmethod
+    def _check_and_assign_kernel(
+            kernel: KernelFunctionWithCovarianceScale):
+        if isinstance(kernel, tuple):
+            assert len(kernel) == 2
+            kernel, covariance_scale = kernel
+            assert isinstance(kernel, KernelFunction)
+            return kernel, anp.array(covariance_scale, copy=True)
+        else:
+            assert isinstance(kernel, KernelFunction)
+            return kernel
 
     @property
     def num_data(self):
@@ -85,14 +103,18 @@ class GaussProcPosteriorState(object):
     def num_fantasies(self):
         return self.pred_mat.shape[1]
 
-    def _state_args(self):
-        return [self.features, self.mean, self.kernel, self.chol_fact,
-            self.pred_mat]
+    def _state_kwargs(self) -> dict:
+        return {
+            'features': self.features,
+            'mean': self.mean,
+            'kernel': self.kernel,
+            'chol_fact': self.chol_fact,
+            'pred_mat': self.pred_mat,
+        }
 
     def predict(self, test_features: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         return predict_posterior_marginals(
-            *self._state_args(), test_features,
-            test_intermediates=self._test_intermediates)
+            **self._state_kwargs(), test_features=test_features)
 
     def sample_joint(
             self, test_features: np.ndarray, num_samples: int = 1,
@@ -100,15 +122,17 @@ class GaussProcPosteriorState(object):
         if random_state is None:
             random_state = np.random
         return sample_posterior_joint(
-            *self._state_args(), test_features, random_state, num_samples)
+            **self._state_kwargs(), test_features=test_features,
+            random_state=random_state, num_samples=num_samples)
 
     def sample_marginals(
-            self, test_features: np.ndarray, num_samples: int=1,
+            self, test_features: np.ndarray, num_samples: int = 1,
             random_state: Optional[RandomState] = None) -> np.ndarray:
         if random_state is None:
             random_state = np.random
         return sample_posterior_marginals(
-            *self._state_args(), test_features, random_state, num_samples)
+            **self._state_kwargs(), test_features=test_features,
+            random_state=random_state, num_samples=num_samples)
 
     def neg_log_likelihood(self) -> anp.ndarray:
         """
@@ -177,8 +201,10 @@ class IncrementalUpdateGPPosteriorState(GaussProcPosteriorState):
     "the update method returns a new object."
     """
     def __init__(
-            self, features: np.ndarray, targets: Optional[np.ndarray],
-            mean: MeanFunction, kernel: KernelFunction,
+            self, features: np.ndarray,
+            targets: Optional[np.ndarray],
+            mean: MeanFunction,
+            kernel: KernelFunctionWithCovarianceScale,
             noise_variance: np.ndarray, **kwargs):
         
         super(IncrementalUpdateGPPosteriorState, self).__init__(
@@ -199,8 +225,8 @@ class IncrementalUpdateGPPosteriorState(GaussProcPosteriorState):
             "target.shape[1] = {} != {} = self.pred_mat.shape[1]".format(
                 target.shape[1], self.pred_mat.shape[1])
         chol_fact_new, pred_mat_new = cholesky_update(
-            self.features, self.chol_fact, self.pred_mat, self.mean,
-            self.kernel, self.noise_variance, feature, target)
+            **self._state_kwargs(), noise_variance=self.noise_variance,
+            feature=feature, target=target)
         features_new = anp.concatenate([self.features, feature], axis=0)
         state_new = IncrementalUpdateGPPosteriorState(
             features=features_new,
@@ -226,6 +252,7 @@ class IncrementalUpdateGPPosteriorState(GaussProcPosteriorState):
 
         :param feature: Additional input xstar, shape (1, d)
         :param mean_impute_mask: See above
+        :param random_state: PRN generator
         :return: target, poster_state_new
         """
         feature = anp.reshape(feature, (1, -1))
@@ -236,9 +263,10 @@ class IncrementalUpdateGPPosteriorState(GaussProcPosteriorState):
             random_state = np.random
         chol_fact_new, pred_mat_new, features_new, target = \
             sample_and_cholesky_update(
-                self.features, self.chol_fact, self.pred_mat, self.mean,
-                self.kernel, self.noise_variance, feature, random_state,
-                mean_impute_mask)
+                **self._state_kwargs(),
+                noise_variance=self.noise_variance,
+                feature=feature, random_state=random_state,
+                mean_impute_mask=mean_impute_mask)
         state_new = IncrementalUpdateGPPosteriorState(
             features=features_new,
             targets=None,
@@ -265,7 +293,7 @@ class IncrementalUpdateGPPosteriorState(GaussProcPosteriorState):
             "Method requires posterior without fantasy samples"
         pred_mat_new = anp.concatenate(
             ([self.pred_mat] * num_fantasies), axis=1)
-        state_new = IncrementalUpdateGPPosteriorState(
+        return IncrementalUpdateGPPosteriorState(
             features=self.features,
             targets=None,
             mean=self.mean,
@@ -273,5 +301,3 @@ class IncrementalUpdateGPPosteriorState(GaussProcPosteriorState):
             noise_variance=self.noise_variance,
             chol_fact=self.chol_fact,
             pred_mat=pred_mat_new)
-        
-        return state_new

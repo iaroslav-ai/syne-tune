@@ -57,8 +57,7 @@ class GaussianProcessRegression(GaussianProcessModel):
             self, kernel: KernelFunction, mean: MeanFunction = None,
             initial_noise_variance: float = None,
             optimization_config: OptimizationConfig = None,
-            random_seed=None, fit_reset_params: bool = True,
-            test_intermediates: Optional[dict] = None):
+            random_seed=None, fit_reset_params: bool = True):
         super().__init__(random_seed)
         if mean is None:
             mean = ScalarMeanFunction()
@@ -67,9 +66,9 @@ class GaussianProcessRegression(GaussianProcessModel):
         self._states = None
         self.fit_reset_params = fit_reset_params
         self.optimization_config = optimization_config
-        self._test_intermediates = test_intermediates
         self.likelihood = MarginalLikelihood(
-            kernel=kernel, mean=mean,
+            kernel=kernel,
+            mean=mean,
             initial_noise_variance=initial_noise_variance)
         self.reset_params()
 
@@ -162,9 +161,7 @@ class GaussianProcessRegression(GaussianProcessModel):
             profiler.start('posterstate')
         self._states = [GaussProcPosteriorState(
             features, targets, self.likelihood.mean, self.likelihood.kernel,
-            self.likelihood.get_noise_variance(as_ndarray=True),
-            debug_log=(self._test_intermediates is not None),
-            test_intermediates=self._test_intermediates)]
+            self.likelihood.get_noise_variance(as_ndarray=True))]
         if profiler is not None:
             profiler.stop('posterstate')
     

@@ -74,9 +74,10 @@ class GaussianProcessLearningCurveModel(object):
     """
     def __init__(
             self, kernel: KernelFunction, res_model: LCModel,
-            mean: MeanFunction = None, initial_noise_variance: float = None,
-            optimization_config: OptimizationConfig = None, random_seed=None,
-            fit_reset_params: bool = True,
+            mean: MeanFunction = None,
+            initial_noise_variance: float = None,
+            optimization_config: OptimizationConfig = None,
+            random_seed=None, fit_reset_params: bool = True,
             use_precomputations: bool = True):
 
         if mean is None:
