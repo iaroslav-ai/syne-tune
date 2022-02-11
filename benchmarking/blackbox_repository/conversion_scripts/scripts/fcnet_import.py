@@ -29,6 +29,10 @@ METRIC_ELAPSED_TIME = 'metric_elapsed_time'
 
 RESOURCE_ATTR = 'hp_epoch'
 
+NUM_UNITS_1 = 'hp_n_units_1'
+
+NUM_UNITS_2 = 'hp_n_units_2'
+
 
 def convert_dataset(dataset_path: Path, max_rows: int = None):
     data = h5py.File(dataset_path, "r")
@@ -106,8 +110,8 @@ def convert_dataset(dataset_path: Path, max_rows: int = None):
         "hp_dropout_2": sp.choice([0.0, 0.3, 0.6]),
         "hp_init_lr": sp.choice([0.0005, 0.001, 0.005, 0.01, 0.05, 0.1]),
         'hp_lr_schedule': sp.choice(["cosine", "const"]),
-        'hp_n_units_1': sp.choice([16, 32, 64, 128, 256, 512]),
-        'hp_n_units_2': sp.choice([16, 32, 64, 128, 256, 512]),
+        NUM_UNITS_1: sp.choice([16, 32, 64, 128, 256, 512]),
+        NUM_UNITS_2: sp.choice([16, 32, 64, 128, 256, 512]),
     }
     fidelity_space = {
         RESOURCE_ATTR: sp.randint(lower=1, upper=100)
